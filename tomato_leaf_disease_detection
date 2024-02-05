@@ -1,0 +1,97 @@
+import os
+import cv2
+import tensorflow as tf
+import numpy as np
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.preprocessing import image
+import matplotlib.pyplot as plt
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.callbacks import TensorBoard
+from sklearn.preprocessing import OneHotEncoder
+
+batch_size = 8
+epochs = 50
+img_width, img_height = 128, 128
+test_size = 0.2
+val_size = 0.2
+
+#Only train folder is used and sub-divided into train, validation and test data
+dataset_dir = r'/kaggle/input/tomatoleaf/tomato/train'
+class_names = sorted([class_name for class_name in os.listdir(dataset_dir) if class_name != '.ipynb_checkpoints'])
+num_classes = len(class_names)
+print(class_names)
+
+images = []
+labels = []
+
+for class_index, class_name in enumerate(class_names):
+    class_dir = os.path.join(dataset_dir, class_name)
+    for img_name in os.listdir(class_dir):
+        img_path = os.path.join(class_dir, img_name)
+        img = image.load_img(img_path, target_size=(img_width, img_height))
+        img_array = image.img_to_array(img)
+        images.append(img_array)
+        labels.append(class_index) 
+base_model = MobileNetV2(input_shape=(img_width, img_height, 3), include_top=False, weights='imagenet')
+base_model.trainable = False
+
+
+images = np.array(images)
+labels = np.array(labels)
+
+images = images / 255.0
+
+train_images, test_images, train_labels, test_labels = train_test_split(
+    images, labels, test_size=test_size, random_state=42
+)
+train_images, val_images, train_labels, val_labels = train_test_split(
+    train_images, train_labels, test_size=val_size, random_state=42
+)
+
+encoder = OneHotEncoder()
+train_labels_onehot = encoder.fit_transform(train_labels.reshape(-1, 1)).toarray()
+val_labels_onehot = encoder.transform(val_labels.reshape(-1, 1)).toarray()
+test_labels_onehot = encoder.transform(test_labels.reshape(-1, 1)).toarray()
+
+global_average_layer = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
+prediction_layer = tf.keras.layers.Dense(num_classes, activation='softmax')(global_average_layer)
+model = tf.keras.Model(inputs=base_model.input, outputs=prediction_layer)
+
+model.compile(optimizer='adam',
+              loss='categorical_crossentropy',  # Use categorical_crossentropy for multi-class problem
+              metrics=['accuracy'])
+
+log_dir = 'logs/'
+tensorboard_callback = TensorBoard(log_dir=log_dir, histogram_freq=1)
+
+train_losses = []
+val_losses = []
+model.fit(train_images, train_labels_onehot, epochs=epochs, batch_size=batch_size,
+          validation_data=(val_images, val_labels_onehot), callbacks=[tensorboard_callback])
+
+predictions = model.predict(test_images)
+predictions_classes = np.argmax(predictions, axis=1)
+correct_predictions = np.equal(predictions_classes, test_labels)
+
+test_accuracy = np.mean(correct_predictions)
+print('Test Accuracy:', test_accuracy)
+
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+tflite_model = converter.convert()
+
+with open('classification.tflite', 'wb') as f:
+    f.write(tflite_model)
+
+def display_test_images(test_images, test_labels, predictions, class_names):
+    num_images = len(test_images)
+
+    for i in range(num_images):
+        plt.figure(figsize=(5, 5))
+        plt.imshow(test_images[i])
+        plt.axis('off')
+        predicted_class = class_names[predictions[i]]
+        true_class = class_names[test_labels[i]]
+        plt.title(f'Predicted: {predicted_class}, True: {true_class}')
+        plt.show()
+
+display_test_images(test_images, test_labels, predictions_classes, class_names)
